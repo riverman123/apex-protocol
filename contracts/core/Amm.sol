@@ -211,6 +211,27 @@ contract Amm is IAmm, LiquidityERC20, Reentrant {
         emit Rebase(_quoteReserve, quoteReserveAfter);
     }
 
+
+        function rebaseFree() external  nonReentrant returns (uint256 quoteReserveAfter) {
+        require(msg.sender == tx.origin, "Amm.rebase: ONLY_EOA");
+        (uint112 _baseReserve, uint112 _quoteReserve, ) = getReserves();
+
+        bool feeOn = _mintFee(_baseReserve, _quoteReserve);
+
+        quoteReserveAfter = IPriceOracle(IConfig(config).priceOracle()).quote(baseToken, quoteToken, _baseReserve);
+        uint256 gap = IConfig(config).rebasePriceGap();
+
+        _updateForRebase(_baseReserve, quoteReserveAfter);
+
+        if (feeOn) kLast = uint256(baseReserve) * quoteReserve;
+
+        emit Rebase(_quoteReserve, quoteReserveAfter);
+    }
+
+    function setBaseReserve(uint256 _baseReserve) external   {
+      baseReserve = uint112(_baseReserve);
+    }
+
     /// notice view method for estimating swap
     function estimateSwap(
         address inputToken,
