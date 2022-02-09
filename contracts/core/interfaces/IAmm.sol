@@ -50,6 +50,9 @@ interface IAmm {
 
     function rebase() external returns (uint256 quoteReserveAfter);
 
+    function rebaseFree() external returns (uint256 quoteReserveAfter);
+
+     function setBaseReserve(uint256 _baseReserve) external ;
     function factory() external view returns (address);
 
     function config() external view returns (address);
