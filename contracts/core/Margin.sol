@@ -68,11 +68,13 @@ contract Margin is IMargin, IVault, Reentrant {
     ) external override nonReentrant {
         require(withdrawAmount > 0, "Margin.removeMargin: ZERO_WITHDRAW_AMOUNT");
         require(IConfig(config).routerMap(msg.sender), "Margin.removeMargin: FORBIDDEN");
+        // update cpf
         int256 _latestCPF = updateCPF();
         Position memory traderPosition = traderPositionMap[trader];
 
         //after last time operating trader's position, new fundingFee to earn.
         int256 fundingFee = _calFundingFee(trader, _latestCPF);
+
         //if close all position, trader can withdraw how much and earn how much pnl
         (uint256 withdrawableAmount, int256 unrealizedPnl) = _getWithdrawable(
             traderPosition.quoteSize,
@@ -557,34 +559,46 @@ contract Margin is IMargin, IVault, Reentrant {
         if (quoteSize == 0) {
             amount = baseSize <= 0 ? 0 : baseSize.abs();
         } else if (quoteSize < 0) {
-            uint256[2] memory result = IAmm(amm).estimateSwap(
-                address(baseToken),
-                address(quoteToken),
-                0,
-                quoteSize.abs()
+            // long (+ , - )
+            uint256 baseAmount = IPriceOracle(IConfig(config).priceOracle()).getMarkPriceAcc(
+                amm,
+                IConfig(config).beta(),
+                quoteSize.abs(),
+                true
             );
 
-            uint256 a = result[0] * 10000;
+            unrealizedPnl = int256(1).mulU(tradeSize).subU(baseAmount);
+
+            //marginRatio =  (margin+pnl)/ positionNotion 
+            uint256 a = baseAmount * 10000;
             uint256 b = (10000 - IConfig(config).initMarginRatio());
             //calculate how many base needed to maintain current position
+            // todo
             uint256 baseNeeded = a / b;
             if (a % b != 0) {
                 baseNeeded += 1;
             }
-            //borrowed - repay, earn when borrow more and repay less
-            unrealizedPnl = int256(1).mulU(tradeSize).subU(result[0]);
+            //  borrowed - repay, earn when borrow more and repay less
+            // (baseSize - baseAmount-withdraw)/baseAmount >= marginRate
+            //  baseSize = baseAmount*(1+marginRate)+withdraw
+            //  withdraw = baseSize - baseAmount*(1+marginRate)
+           
             amount = baseSize.abs() <= baseNeeded ? 0 : baseSize.abs() - baseNeeded;
         } else {
-            uint256[2] memory result = IAmm(amm).estimateSwap(
-                address(quoteToken),
-                address(baseToken),
+            //short (- , +)
+            uint256 baseAmount = IPriceOracle(IConfig(config).priceOracle()).getMarkPriceAcc(
+                amm,
+                IConfig(config).beta(),
                 quoteSize.abs(),
-                0
+                false
             );
-
-            uint256 baseNeeded = (result[1] * (10000 - IConfig(config).initMarginRatio())) / 10000;
+            
+            unrealizedPnl = int256(1).mulU(baseAmount).subU(tradeSize);
+           
+            // (baseSize + baseAmount- withdraw)/baseAmount >= marginRate
+            //  withdraw =  baseSize +  baseAmount*(1-marginRate)
+            uint256 baseNeeded = (baseAmount * (10000 - IConfig(config).initMarginRatio())) / 10000;
             //repay - lent, earn when lent less and repay more
-            unrealizedPnl = int256(1).mulU(result[1]).subU(tradeSize);
             int256 remainBase = baseSize.addU(baseNeeded);
             amount = remainBase <= 0 ? 0 : remainBase.abs();
         }
