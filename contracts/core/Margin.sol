@@ -573,16 +573,15 @@ contract Margin is IMargin, IVault, Reentrant {
             uint256 a = baseAmount * 10000;
             uint256 b = (10000 - IConfig(config).initMarginRatio());
             //calculate how many base needed to maintain current position
-            // todo
+            // (baseSize - baseAmount-withdraw)/baseAmount >= marginRate
+            //  baseSize = baseAmount*(1+marginRate)+withdraw
+            //  withdraw = baseSize - baseAmount*(1+marginRate)
+            // todo fix b 
             uint256 baseNeeded = a / b;
             if (a % b != 0) {
                 baseNeeded += 1;
             }
-            //  borrowed - repay, earn when borrow more and repay less
-            // (baseSize - baseAmount-withdraw)/baseAmount >= marginRate
-            //  baseSize = baseAmount*(1+marginRate)+withdraw
-            //  withdraw = baseSize - baseAmount*(1+marginRate)
-           
+          
             amount = baseSize.abs() <= baseNeeded ? 0 : baseSize.abs() - baseNeeded;
         } else {
             //short (- , +)
