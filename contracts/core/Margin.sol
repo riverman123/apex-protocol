@@ -256,7 +256,7 @@ contract Margin is IMargin, IVault, Reentrant {
             "Margin.closePosition: DEBT_RATIO_OVER"
         );
 
-        baseAmount = _minusPositionWithAmm(trader, isLong, quoteAmount);
+        baseAmount = _closePositionWithAmm(trader, isLong, quoteAmount);
         traderPosition.tradeSize -= (quoteAmount * traderPosition.tradeSize) / quoteSizeAbs;
 
         if (isLong) {
@@ -268,6 +268,7 @@ contract Margin is IMargin, IVault, Reentrant {
             traderPosition.quoteSize = traderPosition.quoteSize.subU(quoteAmount);
             traderPosition.baseSize = traderPosition.baseSize.addU(baseAmount) + fundingFee;
         }
+
         if (traderPosition.quoteSize == 0 && traderPosition.baseSize < 0) {
             IAmm(amm).forceSwap(trader, quoteToken, baseToken, 0, traderPosition.baseSize.abs());
             traderPosition.baseSize = 0;
@@ -303,14 +304,18 @@ contract Margin is IMargin, IVault, Reentrant {
             _calDebtRatio(quoteSize, baseSize + fundingFee) >= IConfig(config).liquidateThreshold(),
             "Margin.liquidate: NOT_LIQUIDATABLE"
         );
-
-        {
+ 
+        {   
+            
             (uint256 _baseAmountT, , bool isIndexPrice) = IPriceOracle(IConfig(config).priceOracle())
                 .getMarkPriceInRatio(amm, quoteAmount, 0);
-
+            
+            // price gap too large use index price , or use the amm swap
             baseAmount = isIndexPrice ? _baseAmountT : _querySwapBaseWithAmm(isLong, quoteAmount);
             (uint256 _baseAmount, uint256 _quoteAmount) = (baseAmount, quoteAmount);
+
             bonus = _executeSettle(trader, isIndexPrice, isLong, fundingFee, baseSize, _baseAmount, _quoteAmount);
+
             if (isLong) {
                 totalQuoteLong = totalQuoteLong - quoteSize.abs();
             } else {
@@ -344,18 +349,21 @@ contract Margin is IMargin, IVault, Reentrant {
         if (remainBaseAmountAfterLiquidate >= 0) {
             bonus = (remainBaseAmountAfterLiquidate.abs() * IConfig(config).liquidateFeeRatio()) / 10000;
             if (!isIndexPrice) {
+                // use amm swap 
                 if (isLong) {
                     IAmm(amm).forceSwap(_trader, baseToken, quoteToken, baseAmount, quoteAmount);
                 } else {
                     IAmm(amm).forceSwap(_trader, quoteToken, baseToken, quoteAmount, baseAmount);
                 }
-            }
+            } 
 
-            if (remainBaseAmountAfterLiquidate.abs() > bonus) {
-                address treasury = IAmmFactory(IAmm(amm).factory()).feeTo();
-                if (treasury != address(0)) {
-                    IERC20(baseToken).transfer(treasury, remainBaseAmountAfterLiquidate.abs() - bonus);
-                } else {
+            // if use index price ,  the amm bear the loss or gain
+            address treasury = IAmmFactory(IAmm(amm).factory()).feeTo();
+            if (treasury != address(0)) {
+                //if  treasure exists, transfer the left to treasure, amm need not change
+                 IERC20(baseToken).transfer(treasury, remainBaseAmountAfterLiquidate.abs() - bonus);
+            } else {
+                // if treasure no exists, transfer the left to amm
                     IAmm(amm).forceSwap(
                         _trader,
                         baseToken,
@@ -364,8 +372,9 @@ contract Margin is IMargin, IVault, Reentrant {
                         0
                     );
                 }
-            }
+            
         } else {
+            //   remainBaseAmountAfterLiquidate  < 0 
             if (!isIndexPrice) {
                 if (isLong) {
                     IAmm(amm).forceSwap(
@@ -440,7 +449,7 @@ contract Margin is IMargin, IVault, Reentrant {
     }
 
     //close position, swap base to get exact quoteAmount, the base has contained pnl
-    function _minusPositionWithAmm(
+    function _closePositionWithAmm(
         address trader,
         bool isLong,
         uint256 quoteAmount
@@ -651,6 +660,7 @@ contract Margin is IMargin, IVault, Reentrant {
         } else if (quoteSize < 0 && baseSize <= 0) {
             debtRatio = 10000;
         } else if (quoteSize > 0) {
+            //short(-,+)
             uint256 quoteAmount = quoteSize.abs();
             //simulate to close short, markPriceAcc bigger, asset undervalue
             uint256 baseAmount = IPriceOracle(IConfig(config).priceOracle()).getMarkPriceAcc(
@@ -662,6 +672,7 @@ contract Margin is IMargin, IVault, Reentrant {
 
             debtRatio = baseAmount == 0 ? 10000 : (baseSize.abs() * 10000) / baseAmount;
         } else {
+            //long(+,-)
             uint256 quoteAmount = quoteSize.abs();
             //simulate to close long, markPriceAcc smaller, debt overvalue
             uint256 baseAmount = IPriceOracle(IConfig(config).priceOracle()).getMarkPriceAcc(
