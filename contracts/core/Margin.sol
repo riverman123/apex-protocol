@@ -358,20 +358,7 @@ contract Margin is IMargin, IVault, Reentrant {
             } 
 
             // if use index price ,  the amm bear the loss or gain
-            address treasury = IAmmFactory(IAmm(amm).factory()).feeTo();
-            if (treasury != address(0)) {
-                //if  treasure exists, transfer the left to treasure, amm need not change
-                 IERC20(baseToken).transfer(treasury, remainBaseAmountAfterLiquidate.abs() - bonus);
-            } else {
-                // if treasure no exists, transfer the left to amm
-                    IAmm(amm).forceSwap(
-                        _trader,
-                        baseToken,
-                        quoteToken,
-                        remainBaseAmountAfterLiquidate.abs() - bonus,
-                        0
-                    );
-                }
+            distributeLiqudatationProfit(_trader, remainBaseAmountAfterLiquidate, bonus);
             
         } else {
             //   remainBaseAmountAfterLiquidate  < 0 
@@ -397,6 +384,25 @@ contract Margin is IMargin, IVault, Reentrant {
                 IAmm(amm).forceSwap(_trader, quoteToken, baseToken, 0, remainBaseAmountAfterLiquidate.abs());
             }
         }
+    }
+
+
+    function  distributeLiqudatationProfit(address _trader, int256 remainBaseAmountAfterLiquidate, uint256 bonus) internal  {
+          address treasury = IAmmFactory(IAmm(amm).factory()).feeTo();
+            if (treasury != address(0)) {
+                //if  treasure exists, transfer the left to treasure, amm need not change
+                 IERC20(baseToken).transfer(treasury, remainBaseAmountAfterLiquidate.abs() - bonus);
+            } else {
+                // if treasure no exists, transfer the left to amm
+                    IAmm(amm).forceSwap(
+                        _trader,
+                        baseToken,
+                        quoteToken,
+                        remainBaseAmountAfterLiquidate.abs() - bonus,
+                        0
+                    );
+                }
+
     }
 
     function deposit(address user, uint256 amount) external override nonReentrant {
