@@ -240,8 +240,10 @@ contract PriceOracle is IPriceOracle, Initializable, Ownable {
     {
         require(quoteAmount == 0 || baseAmount == 0, "PriceOracle.getMarkPriceInRatio: AT_LEAST_ONE_ZERO");
         uint256 markPrice;
+        //check spot price and index price
         (markPrice, isIndexPrice) = getMarkPrice(amm);
         if (!isIndexPrice) {
+        //check price after swap  and index price
             (markPrice, isIndexPrice) = getMarkPriceAfterSwap(amm, quoteAmount, baseAmount);
         }
 

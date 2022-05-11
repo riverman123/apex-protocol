@@ -85,15 +85,15 @@ contract Margin is IMargin, IVault, Reentrant {
 
         uint256 withdrawAmountFromMargin;
         //withdraw from fundingFee firstly, then unrealizedPnl, finally margin
-        int256 uncoverAfterFundingFee = int256(1).mulU(withdrawAmount) - fundingFee;
-        if (uncoverAfterFundingFee > 0) {
-            //fundingFee cant cover withdrawAmount, use unrealizedPnl and margin.
-            //update tradeSize only, no quoteSize, so can sub uncoverAfterFundingFee directly
-            if (uncoverAfterFundingFee <= unrealizedPnl) {
-                traderPosition.tradeSize -= uncoverAfterFundingFee.abs();
+        int256 withdrawAmountSubFundingFee = int256(1).mulU(withdrawAmount) - fundingFee;
+        if (withdrawAmountSubFundingFee > 0) {
+            //fundingFee can't cover withdrawAmount, use unrealizedPnl and margin.
+            //update tradeSize only, no quoteSize, so can sub withdrawAmountSubFundingFee directly
+            if (withdrawAmountSubFundingFee <= unrealizedPnl) {
+                traderPosition.tradeSize -= withdrawAmountSubFundingFee.abs();
             } else {
                 //fundingFee and unrealizedPnl cant cover withdrawAmount, use margin
-                withdrawAmountFromMargin = (uncoverAfterFundingFee - unrealizedPnl).abs();
+                withdrawAmountFromMargin = (withdrawAmountSubFundingFee - unrealizedPnl).abs();
                 //update tradeSize to current price to make unrealizedPnl zero
                 traderPosition.tradeSize = traderPosition.quoteSize < 0
                     ? (int256(1).mulU(traderPosition.tradeSize) - unrealizedPnl).abs()
@@ -101,7 +101,7 @@ contract Margin is IMargin, IVault, Reentrant {
             }
         }
 
-        traderPosition.baseSize = traderPosition.baseSize - uncoverAfterFundingFee;
+        traderPosition.baseSize = traderPosition.baseSize - withdrawAmountSubFundingFee;
 
         traderPositionMap[trader] = traderPosition;
         traderCPF[trader] = _latestCPF;
@@ -121,17 +121,96 @@ contract Margin is IMargin, IVault, Reentrant {
         int256 _latestCPF = updateCPF();
 
         Position memory traderPosition = traderPositionMap[trader];
-
-        uint256 quoteSizeAbs = traderPosition.quoteSize.abs();
+  
         int256 fundingFee = _calFundingFee(trader, _latestCPF);
 
-        uint256 quoteAmountMax;
-        {
-            int256 marginAcc;
-            if (traderPosition.quoteSize == 0) {
+        uint256 quoteAmountMax =  getMaxQuoteAmount(traderPosition, fundingFee);
+
+        bool isLong = side == 0;
+
+        baseAmount = _openPositionWithAmm(trader, isLong, quoteAmount);
+        require(baseAmount > 0, "Margin.openPosition: TINY_QUOTE_AMOUNT");
+
+        updateTradeSize(traderPosition, isLong, quoteAmount, baseAmount);
+
+        if (isLong) {
+            traderPosition.quoteSize = traderPosition.quoteSize.subU(quoteAmount);
+            traderPosition.baseSize = traderPosition.baseSize.addU(baseAmount) + fundingFee;
+            totalQuoteLong = totalQuoteLong + quoteAmount;
+        } else {
+            traderPosition.quoteSize = traderPosition.quoteSize.addU(quoteAmount);
+            traderPosition.baseSize = traderPosition.baseSize.subU(baseAmount) + fundingFee;
+            totalQuoteShort = totalQuoteShort + quoteAmount;
+        }
+        require(traderPosition.quoteSize.abs() <= quoteAmountMax, "Margin.openPosition: INIT_MARGIN_RATIO");
+        
+        require(
+            _calDebtRatio(traderPosition.quoteSize, traderPosition.baseSize) < IConfig(config).liquidateThreshold(),
+            "Margin.openPosition: WILL_BE_LIQUIDATED"
+        );
+
+        traderCPF[trader] = _latestCPF;
+        traderPositionMap[trader] = traderPosition;
+        emit OpenPosition(trader, side, baseAmount, quoteAmount, fundingFee, traderPosition);
+    }
+
+
+    function getMaxQuoteAmount(Position memory traderPosition,int256 fundingFee) internal returns (uint256 quoteAmountMax) {
+       {
+            int256  marginAcc = getMarginByCloseCurrentPosition(traderPosition, fundingFee);
+            require(marginAcc > 0, "Margin.openPosition: INVALID_MARGIN_ACC");
+
+            (, uint112 quoteReserve, ) = IAmm(amm).getReserves();
+
+            //calculate the quoteAmount if the marginacc swap
+            //check spot price and index price gap 
+            //check price after swap  and index price gap
+            (, uint256 _quoteAmountT, bool isIndexPrice) = IPriceOracle(IConfig(config).priceOracle())
+                .getMarkPriceInRatio(amm, 0, marginAcc.abs());
+            
+            // if price impact is large ,use index price .
+            uint256 _quoteAmount = isIndexPrice
+                ? _quoteAmountT
+                : IAmm(amm).estimateSwap(baseToken, quoteToken, marginAcc.abs(), 0)[1];
+
+           //  formula: (vUSD * quoteAmount)/(marginRatio* vUSD + 2 quoteAmount*beta)
+            quoteAmountMax =
+                (quoteReserve * 10000 * _quoteAmount) /
+                ((IConfig(config).initMarginRatio() * quoteReserve) + (200 * _quoteAmount * IConfig(config).beta()));
+        }
+    }
+
+    // use for calculate the pnl 
+    function updateTradeSize(Position memory traderPosition, bool isLong,  uint256 quoteAmount,   uint256 baseAmount) internal  { 
+       uint256 quoteSizeAbs = traderPosition.quoteSize.abs();
+        if (
+                traderPosition.quoteSize == 0 ||
+                (traderPosition.quoteSize < 0 == isLong) ||
+                (traderPosition.quoteSize > 0 == !isLong)
+            ) {
+                // the same direction
+                //baseAmount is real base cost
+                traderPosition.tradeSize = traderPosition.tradeSize + baseAmount;
+            } else {
+                // the different direaction
+                if (quoteAmount < quoteSizeAbs) {
+                    //entry price not change, decrease origin position
+                    traderPosition.tradeSize =
+                        traderPosition.tradeSize -
+                        (quoteAmount * traderPosition.tradeSize) /
+                        quoteSizeAbs;
+                } else {
+                    //after close all opposite position, create new position with new entry price
+                    traderPosition.tradeSize = ((quoteAmount - quoteSizeAbs) * baseAmount) / quoteAmount;
+                }
+            }
+    }
+
+    function getMarginByCloseCurrentPosition(Position memory traderPosition, int256 fundingFee  ) internal view returns(int256 marginAcc){
+     if (traderPosition.quoteSize == 0) {
                 marginAcc = traderPosition.baseSize + fundingFee;
             } else if (traderPosition.quoteSize > 0) {
-                //simulate to close short
+                //simulate to close short              
                 uint256[2] memory result = IAmm(amm).estimateSwap(
                     address(quoteToken),
                     address(baseToken),
@@ -149,62 +228,6 @@ contract Margin is IMargin, IVault, Reentrant {
                 );
                 marginAcc = traderPosition.baseSize.subU(result[0]) + fundingFee;
             }
-            require(marginAcc > 0, "Margin.openPosition: INVALID_MARGIN_ACC");
-            (, uint112 quoteReserve, ) = IAmm(amm).getReserves();
-            (, uint256 _quoteAmountT, bool isIndexPrice) = IPriceOracle(IConfig(config).priceOracle())
-                .getMarkPriceInRatio(amm, 0, marginAcc.abs());
-
-            uint256 _quoteAmount = isIndexPrice
-                ? _quoteAmountT
-                : IAmm(amm).estimateSwap(baseToken, quoteToken, marginAcc.abs(), 0)[1];
-
-            quoteAmountMax =
-                (quoteReserve * 10000 * _quoteAmount) /
-                ((IConfig(config).initMarginRatio() * quoteReserve) + (200 * _quoteAmount * IConfig(config).beta()));
-        }
-
-        bool isLong = side == 0;
-        baseAmount = _addPositionWithAmm(trader, isLong, quoteAmount);
-        require(baseAmount > 0, "Margin.openPosition: TINY_QUOTE_AMOUNT");
-
-        if (
-            traderPosition.quoteSize == 0 ||
-            (traderPosition.quoteSize < 0 == isLong) ||
-            (traderPosition.quoteSize > 0 == !isLong)
-        ) {
-            //baseAmount is real base cost
-            traderPosition.tradeSize = traderPosition.tradeSize + baseAmount;
-        } else {
-            if (quoteAmount < quoteSizeAbs) {
-                //entry price not change
-                traderPosition.tradeSize =
-                    traderPosition.tradeSize -
-                    (quoteAmount * traderPosition.tradeSize) /
-                    quoteSizeAbs;
-            } else {
-                //after close all opposite position, create new position with new entry price
-                traderPosition.tradeSize = ((quoteAmount - quoteSizeAbs) * baseAmount) / quoteAmount;
-            }
-        }
-
-        if (isLong) {
-            traderPosition.quoteSize = traderPosition.quoteSize.subU(quoteAmount);
-            traderPosition.baseSize = traderPosition.baseSize.addU(baseAmount) + fundingFee;
-            totalQuoteLong = totalQuoteLong + quoteAmount;
-        } else {
-            traderPosition.quoteSize = traderPosition.quoteSize.addU(quoteAmount);
-            traderPosition.baseSize = traderPosition.baseSize.subU(baseAmount) + fundingFee;
-            totalQuoteShort = totalQuoteShort + quoteAmount;
-        }
-        require(traderPosition.quoteSize.abs() <= quoteAmountMax, "Margin.openPosition: INIT_MARGIN_RATIO");
-        require(
-            _calDebtRatio(traderPosition.quoteSize, traderPosition.baseSize) < IConfig(config).liquidateThreshold(),
-            "Margin.openPosition: WILL_BE_LIQUIDATED"
-        );
-
-        traderCPF[trader] = _latestCPF;
-        traderPositionMap[trader] = traderPosition;
-        emit OpenPosition(trader, side, baseAmount, quoteAmount, fundingFee, traderPosition);
     }
 
     function closePosition(address trader, uint256 quoteAmount)
@@ -398,7 +421,7 @@ contract Margin is IMargin, IVault, Reentrant {
     }
 
     //swap exact quote to base
-    function _addPositionWithAmm(
+    function _openPositionWithAmm(
         address trader,
         bool isLong,
         uint256 quoteAmount
