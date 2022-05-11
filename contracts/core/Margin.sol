@@ -119,20 +119,20 @@ contract Margin is IMargin, IVault, Reentrant {
         require(quoteAmount > 0, "Margin.openPosition: ZERO_QUOTE_AMOUNT");
         require(IConfig(config).routerMap(msg.sender), "Margin.openPosition: FORBIDDEN");
         int256 _latestCPF = updateCPF();
-
-        Position memory traderPosition = traderPositionMap[trader];
   
         int256 fundingFee = _calFundingFee(trader, _latestCPF);
 
-        uint256 quoteAmountMax =  getMaxQuoteAmount(traderPosition, fundingFee);
+        uint256 quoteAmountMax =  getMaxQuoteAmount(trader, fundingFee);
 
         bool isLong = side == 0;
 
         baseAmount = _openPositionWithAmm(trader, isLong, quoteAmount);
         require(baseAmount > 0, "Margin.openPosition: TINY_QUOTE_AMOUNT");
 
-        updateTradeSize(traderPosition, isLong, quoteAmount, baseAmount);
+        _updateUserTradeSize(trader, isLong, quoteAmount, baseAmount);
 
+
+        Position memory traderPosition = traderPositionMap[trader];    
         if (isLong) {
             traderPosition.quoteSize = traderPosition.quoteSize.subU(quoteAmount);
             traderPosition.baseSize = traderPosition.baseSize.addU(baseAmount) + fundingFee;
@@ -142,6 +142,7 @@ contract Margin is IMargin, IVault, Reentrant {
             traderPosition.baseSize = traderPosition.baseSize.subU(baseAmount) + fundingFee;
             totalQuoteShort = totalQuoteShort + quoteAmount;
         }
+
         require(traderPosition.quoteSize.abs() <= quoteAmountMax, "Margin.openPosition: INIT_MARGIN_RATIO");
         
         require(
@@ -155,9 +156,10 @@ contract Margin is IMargin, IVault, Reentrant {
     }
 
 
-    function getMaxQuoteAmount(Position memory traderPosition,int256 fundingFee) internal returns (uint256 quoteAmountMax) {
-       {
-            int256  marginAcc = getMarginByCloseCurrentPosition(traderPosition, fundingFee);
+    function getMaxQuoteAmount(address  trader,int256 fundingFee) internal view returns (uint256 quoteAmountMax) {
+       {    
+            Position memory traderPosition = traderPositionMap[trader];
+            int256  marginAcc = _getMarginByCloseCurrentPosition(traderPosition, fundingFee);
             require(marginAcc > 0, "Margin.openPosition: INVALID_MARGIN_ACC");
 
             (, uint112 quoteReserve, ) = IAmm(amm).getReserves();
@@ -181,7 +183,9 @@ contract Margin is IMargin, IVault, Reentrant {
     }
 
     // use for calculate the pnl 
-    function updateTradeSize(Position memory traderPosition, bool isLong,  uint256 quoteAmount,   uint256 baseAmount) internal  { 
+    function _updateUserTradeSize(address  trader, bool isLong,  uint256 quoteAmount,   uint256 baseAmount) internal  { 
+       // todo 
+         Position storage traderPosition = traderPositionMap[trader];
        uint256 quoteSizeAbs = traderPosition.quoteSize.abs();
         if (
                 traderPosition.quoteSize == 0 ||
@@ -206,7 +210,7 @@ contract Margin is IMargin, IVault, Reentrant {
             }
     }
 
-    function getMarginByCloseCurrentPosition(Position memory traderPosition, int256 fundingFee  ) internal view returns(int256 marginAcc){
+    function _getMarginByCloseCurrentPosition(Position memory traderPosition, int256 fundingFee  ) internal view returns(int256 marginAcc){
      if (traderPosition.quoteSize == 0) {
                 marginAcc = traderPosition.baseSize + fundingFee;
             } else if (traderPosition.quoteSize > 0) {
