@@ -357,8 +357,8 @@ contract Margin is IMargin, IVault, Reentrant {
                 }
             } 
 
-            // if use index price ,  the amm bear the loss or gain
-            distributeLiqudatationProfit(_trader, remainBaseAmountAfterLiquidate, bonus);
+            // if use index price ,  the amm bear get benefit
+            _distributeLiqudatationProfit(_trader, remainBaseAmountAfterLiquidate, bonus);
             
         } else {
             //   remainBaseAmountAfterLiquidate  < 0 
@@ -387,7 +387,7 @@ contract Margin is IMargin, IVault, Reentrant {
     }
 
 
-    function  distributeLiqudatationProfit(address _trader, int256 remainBaseAmountAfterLiquidate, uint256 bonus) internal  {
+    function  _distributeLiqudatationProfit(address _trader, int256 remainBaseAmountAfterLiquidate, uint256 bonus) internal  {
           address treasury = IAmmFactory(IAmm(amm).factory()).feeTo();
             if (treasury != address(0)) {
                 //if  treasure exists, transfer the left to treasure, amm need not change
